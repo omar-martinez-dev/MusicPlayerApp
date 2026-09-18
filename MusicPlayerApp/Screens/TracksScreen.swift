@@ -11,11 +11,11 @@ import SwiftData
 struct TracksScreen: View {
     
     @Environment(\.modelContext) private var modelContext
-    @Environment(\.fileManagerStore) private var fileManagerStore
-    @Environment(\.audioPlayerStore) private var audioPlayerStore
+    @Environment(FileManagerStore.self) private var fileManagerStore
+    @Environment(AudioPlayerStore.self) private var audioPlayerStore
     @Environment(\.showToast) private var showToast
     
-    @Query private var trackList: [Track]
+    @Query(sort: \Track.title) private var trackList: [Track]
     @State private var searchText = ""
     @State private var isImporting: Bool = false
     @State private var showSheet: Bool = false
@@ -28,7 +28,7 @@ struct TracksScreen: View {
             return trackList
         } else {
             return trackList.filter {
-                $0.title.localizedCaseInsensitiveContains(searchText)
+                $0.title.localizedStandardContains(searchText)
             }
         }
     }
@@ -65,12 +65,13 @@ struct TracksScreen: View {
             .navigationTitle("Tracks")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button {
-                        toggleEditMode()
-                    } label: {
-                        Image(systemName: editMode.isEditing ? "checkmark.square.fill" : "checkmark.square")
-                    }
+                ToolbarItem(placement: .topBarLeading) {
+                    Button(
+                        editMode.isEditing ? "Finish Selecting" : "Select Tracks",
+                        systemImage: editMode.isEditing ? "checkmark.square.fill" : "checkmark.square",
+                        action: toggleEditMode
+                    )
+                    .labelStyle(.iconOnly)
                     .disabled(trackList.isEmpty)
                 }
                 
@@ -80,6 +81,7 @@ struct TracksScreen: View {
                     } label: {
                         Image(systemName: audioPlayerStore.playbackMode.systemImageName)
                     }
+                    .accessibilityLabel("Change Playback Mode")
                     .disabled(trackList.isEmpty ||  editMode.isEditing)
                     .opacity(editMode.isEditing ? 0 : 1)
                 }
@@ -94,8 +96,9 @@ struct TracksScreen: View {
                         }
                     } label: {
                         Image(systemName: editMode.isEditing ? "music.note.list" : "plus.app")
-                            .disabled(editMode.isEditing && multiTrackSelection.isEmpty)
                     }
+                    .accessibilityLabel(editMode.isEditing ? "Add Selection to Playlist" : "Import Tracks")
+                    .disabled(editMode.isEditing && multiTrackSelection.isEmpty)
                 }
             }
             .overlay {
@@ -108,7 +111,7 @@ struct TracksScreen: View {
             }
             .sheet(item: $selectedTrack) { track in
                 TrackOptionsSheet(track: track)
-                    .presentationDetents([.fraction(0.40)])
+                    .presentationDetents([.medium, .large])
                     .withToast()
             }
             .fileImporter(
@@ -117,14 +120,9 @@ struct TracksScreen: View {
                 allowsMultipleSelection: true
             ) { result in
                 switch result {
-                case .success(let URLs):
+                case .success(let urls):
                     Task {
-                        for fileURL in URLs {
-                            if let track = await importData(url: fileURL) {
-                                saveTrack(track: track)
-                                showToast(.success(message: "Track(s) imported successfully"))
-                            }
-                        }
+                        await importTracks(from: urls)
                     }
                 case .failure(let error):
                     showToast(.error(message: "Failed to import file: \(error.localizedDescription)"))
@@ -133,30 +131,66 @@ struct TracksScreen: View {
         }
     }
     
-    func importData(url: URL) async -> Track? {
-        guard url.startAccessingSecurityScopedResource() else { return nil }
-        defer { url.stopAccessingSecurityScopedResource() }
-        
-        return await fileManagerStore.saveImportedFile(url)
-    }
-    
-    func saveTrack(track: Track?) {
-        if let track = track {
-            modelContext.insert(track)
-            try? modelContext.save()
+    func importTracks(from urls: [URL]) async {
+        var importedCount = 0
+
+        for url in urls {
+            do {
+                let track = try await fileManagerStore.importTrack(from: url)
+                modelContext.insert(track)
+
+                do {
+                    try modelContext.save()
+                    importedCount += 1
+                } catch {
+                    modelContext.rollback()
+                    try? fileManagerStore.deleteFile(withName: track.fileName)
+                    throw error
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                showToast(.error(message: "Failed to import \(url.lastPathComponent): \(error.localizedDescription)"))
+            }
+        }
+
+        if importedCount > 0 {
+            showToast(.success(message: "Imported \(importedCount) track(s) successfully"))
         }
     }
     
     func deleteTrack(at Offsets: IndexSet) {
-        for offset in Offsets {
-            let track = trackList[offset]
+        let tracksToDelete = Offsets.compactMap { index in
+            filteredTracks.indices.contains(index) ? filteredTracks[index] : nil
+        }
+        let fileNamesToDelete = tracksToDelete.map(\.fileName)
+
+        for track in tracksToDelete {
             audioPlayerStore.prepareForTrackDeletion(track: track, deletedFrom: .allTracks)
-            fileManagerStore.deleteFile(withName: track.fileName)
-            
             modelContext.delete(track)
-            try? modelContext.save()
-            
+        }
+
+        do {
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            showToast(.error(message: "Failed to delete tracks: \(error.localizedDescription)"))
+            return
+        }
+
+        var cleanupErrors = 0
+        for fileName in fileNamesToDelete {
+            do {
+                try fileManagerStore.deleteFile(withName: fileName)
+            } catch {
+                cleanupErrors += 1
+            }
+        }
+
+        if cleanupErrors == 0 {
             showToast(.success(message: "Track(s) deleted successfully"))
+        } else {
+            showToast(.error(message: "Tracks were removed, but \(cleanupErrors) audio file(s) could not be cleaned up"))
         }
     }
     
@@ -174,5 +208,7 @@ struct TracksScreen: View {
 #Preview {
     TracksScreen()
         .modelContainer(SampleData.shared.modelContainer)
+        .environment(AudioPlayerStore())
+        .environment(FileManagerStore())
         .withToast()
 }

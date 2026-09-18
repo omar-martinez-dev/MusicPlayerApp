@@ -20,7 +20,7 @@ class Track: Identifiable {
     var artwork: Data?
     var favorite: Bool = false
     
-    @Relationship(deleteRule: .cascade, inverse: \Playlist.trackList) var playlists: [Playlist] = []
+    var playlists: [Playlist] = []
     
     var artworkImage: UIImage? {
         guard let data = artwork else { return nil }
@@ -45,7 +45,7 @@ class Track: Identifiable {
         favorite = false
     }
     
-    static let sampleData = [
+    @MainActor static let sampleData = [
         Track(id: UUID(), title: "Thunderstruck", artist: "AC/DC", album: "Back in Black", duration: 242.0, fileName: "None"),
         Track(id: UUID(), title: "Shape of You", artist: "Ed Sheeran", album: "Divide", duration: 230.0, fileName: "None"),
         Track(id: UUID(), title: "All of Me", artist: "John Legend", album: "Love in the Future", duration: 220.0, fileName: "None"),

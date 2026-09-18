@@ -11,7 +11,7 @@ import SwiftUI
 struct ToastModifier: ViewModifier {
     
     @State private var event: AppEvent?
-    @State private var dismisstrack: DispatchWorkItem?
+    @State private var dismissTask: Task<Void, Never>?
     
     func body(content: Content) -> some View {
         content
@@ -20,16 +20,20 @@ struct ToastModifier: ViewModifier {
                     self.event = event
                 }
                 
-                dismisstrack?.cancel()
-                
-                let task = DispatchWorkItem {
+                dismissTask?.cancel()
+                dismissTask = Task { @MainActor in
+                    do {
+                        try await Task.sleep(for: .seconds(3))
+                    } catch is CancellationError {
+                        return
+                    } catch {
+                        return
+                    }
+
                     withAnimation(.easeInOut) {
                         self.event = nil
                     }
                 }
-                
-                self.dismisstrack = task
-                DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: task)
             }))
             .overlay(alignment: .top) {
                 if let event {

@@ -14,7 +14,7 @@ class Playlist: PlaylistType, Identifiable {
 
     @Attribute(.unique) var id: UUID = UUID()
     var title: String
-    @Relationship(deleteRule: .nullify) var trackList: [Track] = []
+    @Relationship(deleteRule: .nullify, inverse: \Track.playlists) var trackList: [Track] = []
     
     init(id: UUID, title: String) {
         self.id = id
@@ -31,7 +31,7 @@ class Playlist: PlaylistType, Identifiable {
         trackList.removeAll(where: { $0.id == track.id })
     }
     
-    static let sampleData = [
+    @MainActor static let sampleData = [
         Playlist(id: UUID(), title: "Jazz"),
         Playlist(id: UUID(), title: "Rock Hits"),
         Playlist(id: UUID(), title: "Classical")

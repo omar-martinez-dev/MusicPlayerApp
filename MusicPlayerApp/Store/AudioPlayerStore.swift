@@ -34,8 +34,9 @@ enum PlaybackMode {
     }
 }
 
+@MainActor
 @Observable
-class AudioPlayerStore: NSObject, AVAudioPlayerDelegate {
+final class AudioPlayerStore: NSObject {
     
     @ObservationIgnored private var player: AVAudioPlayer?
     
@@ -44,17 +45,9 @@ class AudioPlayerStore: NSObject, AVAudioPlayerDelegate {
     var currentTime: TimeInterval = 0.0
     var totalTime: TimeInterval = 0.0
     var playbackMode: PlaybackMode = .loopAll
-    weak var currentTrack: Track?
+    var currentTrack: Track?
     var trackList: [Track] = []
-    var allTracksProvider: (() -> [Track])?
-    var favoritesProvider: (() -> [Favorites])?
-    var playlistsProvider: (() -> [Playlist])?
-    
-    var playbackSource: PlaybackSource = .allTracks {
-        didSet {
-            updateTrackListFromCurrentSource()
-        }
-    }
+    var playbackSource: PlaybackSource = .allTracks
     
     override init() {
         super.init()
@@ -74,7 +67,12 @@ class AudioPlayerStore: NSObject, AVAudioPlayerDelegate {
         
         let fileURL = documentsDirectory.appendingPathComponent(track.fileName)
         guard FileManager.default.fileExists(atPath: fileURL.path) else { return }
-        guard shouldPlayNewTrack(track, source: playback) else { return }
+        if !shouldPlayNewTrack(track, source: playback) {
+            if !isPlaying {
+                resumeAudio()
+            }
+            return
+        }
         
         do {
             player = try AVAudioPlayer(contentsOf: fileURL)
@@ -94,18 +92,21 @@ class AudioPlayerStore: NSObject, AVAudioPlayerDelegate {
         }
     }
     
-    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+    private func handlePlaybackFinished(successfully flag: Bool) {
+        guard flag else {
+            clearPlaybackState()
+            return
+        }
+
         switch playbackMode {
         case .loopSingle:
-            if let currentTrack = currentTrack {
-                playTrack(track: currentTrack, playback: playbackSource)
-            }
+            restartCurrentTrack()
         case .random:
-            if !trackList.isEmpty {
-                let randomTrack = trackList.randomElement()
-                if let randomTrack = randomTrack {
-                    playTrack(track: randomTrack, playback: playbackSource)
-                }
+            let candidates = trackList.filter { $0.id != currentTrack?.id }
+            if let randomTrack = candidates.randomElement() {
+                playTrack(track: randomTrack, playback: playbackSource)
+            } else {
+                restartCurrentTrack()
             }
         case .loopAll:
             playNext()
@@ -122,9 +123,7 @@ class AudioPlayerStore: NSObject, AVAudioPlayerDelegate {
         
         let nextIndex = currentIndex + 1
         let nextTrack = (nextIndex < trackList.count) ? trackList[nextIndex] : trackList.first
-        if let nextTrack = nextTrack {
-            playTrack(track: nextTrack, playback: playbackSource)
-        }
+        playOrRestart(nextTrack)
     }
 
     func playPrevious() {
@@ -137,9 +136,7 @@ class AudioPlayerStore: NSObject, AVAudioPlayerDelegate {
         
         let prevIndex = currentIndex - 1
         let prevTrack = (prevIndex >= 0) ? trackList[prevIndex] : trackList.last
-        if let prevTrack = prevTrack {
-            playTrack(track: prevTrack, playback: playbackSource)
-        }
+        playOrRestart(prevTrack)
     }
 
     private var currentTrackIndex: Int? {
@@ -151,21 +148,6 @@ class AudioPlayerStore: NSObject, AVAudioPlayerDelegate {
         return !(currentTrack == track && source == playbackSource)
     }
     
-    func updateTrackListFromCurrentSource() {
-        guard let all = allTracksProvider,
-              let fav = favoritesProvider,
-              let play = playlistsProvider
-        else {
-            return
-        }
-
-        updateTrackList(
-            allTracks: all(),
-            favorites: fav(),
-            playlists: play()
-        )
-    }
-
     func updateTrackList(allTracks: [Track], favorites: [Favorites], playlists: [Playlist]) {
         let newList: [Track]
         switch playbackSource {
@@ -204,7 +186,41 @@ class AudioPlayerStore: NSObject, AVAudioPlayerDelegate {
         isPlaying = false
         currentTime = 0.0
         totalTime = 0.0
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
     }
+
+    private func playOrRestart(_ track: Track?) {
+        guard let track else {
+            clearPlaybackState()
+            return
+        }
+
+        if track.id == currentTrack?.id {
+            restartCurrentTrack()
+        } else {
+            playTrack(track: track, playback: playbackSource)
+        }
+    }
+
+    private func restartCurrentTrack() {
+        guard let player, currentTrack != nil else {
+            clearPlaybackState()
+            return
+        }
+
+        player.currentTime = 0
+        guard player.play() else {
+            clearPlaybackState()
+            return
+        }
+
+        currentTime = 0
+        isPlaying = true
+        if let currentTrack {
+            updateNowPlayingInfo(for: currentTrack, isPlaying: true)
+        }
+    }
+
     func cyclePlaybackMode() {
         switch playbackMode {
         case .loopAll:
@@ -221,12 +237,15 @@ class AudioPlayerStore: NSObject, AVAudioPlayerDelegate {
         isPlaying = false
         
         if let track = currentTrack {
-            updateNowPlayingInfo(for: track, isPlaying: true)
+            updateNowPlayingInfo(for: track, isPlaying: false)
         }
     }
 
     func resumeAudio() {
-        player?.play()
+        guard let player, player.play() else {
+            isPlaying = false
+            return
+        }
         isPlaying = true
         
         if let track = currentTrack {
@@ -251,34 +270,46 @@ class AudioPlayerStore: NSObject, AVAudioPlayerDelegate {
             MPMediaItemPropertyPlaybackDuration: player?.duration ?? 0
         ]
 
-        if let artworkImage = UIImage(named: "defaultArtwork") {
-            let artwork = MPMediaItemArtwork(boundsSize: artworkImage.size) { _ in artworkImage }
+        if let artwork = Self.makeNowPlayingArtwork(from: track.artwork) {
             nowPlayingInfo[MPMediaItemPropertyArtwork] = artwork
         }
 
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
+    }
+
+    private nonisolated static func makeNowPlayingArtwork(from data: Data?) -> MPMediaItemArtwork? {
+        guard let data, let image = UIImage(data: data) else { return nil }
+        return MPMediaItemArtwork(boundsSize: image.size) { _ in image }
     }
     
     func setupRemoteTransportControls() {
         let commandCenter = MPRemoteCommandCenter.shared()
 
         commandCenter.playCommand.addTarget { [weak self] _ in
-            self?.resumeAudio()
+            Task { @MainActor [weak self] in
+                self?.resumeAudio()
+            }
             return .success
         }
 
         commandCenter.pauseCommand.addTarget { [weak self] _ in
-            self?.stopAudio()
+            Task { @MainActor [weak self] in
+                self?.stopAudio()
+            }
             return .success
         }
 
         commandCenter.nextTrackCommand.addTarget { [weak self] _ in
-            self?.playNext()
+            Task { @MainActor [weak self] in
+                self?.playNext()
+            }
             return .success
         }
 
         commandCenter.previousTrackCommand.addTarget { [weak self] _ in
-            self?.playPrevious()
+            Task { @MainActor [weak self] in
+                self?.playPrevious()
+            }
             return .success
         }
 
@@ -286,5 +317,13 @@ class AudioPlayerStore: NSObject, AVAudioPlayerDelegate {
         commandCenter.pauseCommand.isEnabled = true
         commandCenter.nextTrackCommand.isEnabled = true
         commandCenter.previousTrackCommand.isEnabled = true
+    }
+}
+
+extension AudioPlayerStore: AVAudioPlayerDelegate {
+    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        Task { @MainActor [weak self] in
+            self?.handlePlaybackFinished(successfully: flag)
+        }
     }
 }

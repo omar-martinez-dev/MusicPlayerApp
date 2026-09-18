@@ -11,14 +11,15 @@ import SwiftData
 
 struct TrackOptionsSheet: View {
     @Environment(\.modelContext) private var modelContext
-    @Environment(\.audioPlayerStore) private var audioPlayerStore
-    @Environment(\.fileManagerStore) private var fileManagerStore
+    @Environment(AudioPlayerStore.self) private var audioPlayerStore
+    @Environment(FileManagerStore.self) private var fileManagerStore
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.showToast) private var showToast
     
-    @Query private var playlists: [Playlist]
     @Query private var favorites: [Favorites]
     @State private var showPlaylistSelectionSheet: Bool = false
     @State private var showEditTrackSheet: Bool = false
+    @State private var isConfirmingDeletion = false
     
     var track: Track
     var trackSet: Set<UUID> {
@@ -56,13 +57,26 @@ struct TrackOptionsSheet: View {
                 }
                 
                 Button {
-                    deleteTrack()
-                    dismiss()
+                    isConfirmingDeletion = true
                 } label: {
                     Label("Delete", systemImage: "trash.fill")
                 }
+                .foregroundStyle(.red)
+                .confirmationDialog(
+                    "Delete \(track.title)?",
+                    isPresented: $isConfirmingDeletion,
+                    titleVisibility: .visible
+                ) {
+                    Button("Delete Track", role: .destructive) {
+                        if deleteTrack() {
+                            dismiss()
+                        }
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("This removes the track from your library and deletes its imported audio file.")
+                }
             }
-            .buttonStyle(.plain)
             .scrollContentBackground(.hidden)
             .contentMargins(.vertical, 0)
         }
@@ -76,18 +90,43 @@ struct TrackOptionsSheet: View {
     
     func addTrackToFavorites(track: Track) {
         favorites.first?.addTrack(track)
+        saveFavorites()
     }
     
     func removeTrackFromFavorites(track: Track) {
         favorites.first?.removeTrack(track)
+        saveFavorites()
     }
     
-    func deleteTrack() {
+    private func saveFavorites() {
+        do {
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            showToast(.error(message: "Failed to update Favorites: \(error.localizedDescription)"))
+        }
+    }
+
+    func deleteTrack() -> Bool {
+        let fileName = track.fileName
         audioPlayerStore.prepareForTrackDeletion(track: track, deletedFrom: .allTracks)
-        fileManagerStore.deleteFile(withName: track.fileName)
-        
         modelContext.delete(track)
-        try? modelContext.save()
+
+        do {
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            showToast(.error(message: "Failed to delete track: \(error.localizedDescription)"))
+            return false
+        }
+
+        do {
+            try fileManagerStore.deleteFile(withName: fileName)
+            showToast(.success(message: "Track deleted successfully"))
+        } catch {
+            showToast(.error(message: "Track was removed, but its audio file could not be cleaned up"))
+        }
+        return true
     }
 }
 

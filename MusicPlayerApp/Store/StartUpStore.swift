@@ -8,29 +8,28 @@
 import Foundation
 import SwiftData
 
-final class StartUpStore {
-    let container: ModelContainer
-    
-    init() throws {
-        self.container = try ModelContainer(for: Favorites.self)
-        ensureFavoritesExists()
+@MainActor
+enum StartUpStore {
+    static func makeContainer(isStoredInMemoryOnly: Bool = false) throws -> ModelContainer {
+        let schema = Schema([Track.self, Playlist.self, Favorites.self])
+        let configuration = ModelConfiguration(
+            schema: schema,
+            isStoredInMemoryOnly: isStoredInMemoryOnly
+        )
+        let container = try ModelContainer(for: schema, configurations: [configuration])
+        try ensureFavoritesExists(in: container.mainContext)
+        return container
     }
-    
-    private func ensureFavoritesExists() {
-        let context = ModelContext(container)
+
+    static func ensureFavoritesExists(in context: ModelContext) throws {
         let fetchDescriptor = FetchDescriptor<Favorites>(
             predicate: #Predicate { $0.title == "Favorites" }
         )
-        
-         do {
-             let fetchedFavorites = try context.fetch(fetchDescriptor)
-             if fetchedFavorites.isEmpty {
-                 let favorites = Favorites(id: UUID(), title: "Favorites")
-                 context.insert(favorites)
-                 try context.save()
-             }
-         } catch {
-             print("Error fetching favorites: \(error)")
-         }
+
+        let fetchedFavorites = try context.fetch(fetchDescriptor)
+        if fetchedFavorites.isEmpty {
+            context.insert(Favorites(id: UUID(), title: "Favorites"))
+            try context.save()
+        }
     }
 }

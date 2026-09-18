@@ -12,8 +12,9 @@ struct TrackSelectionView: View {
     
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.showToast) private var showToast
     
-    @Query private var trackList: [Track]
+    @Query(sort: \Track.title) private var trackList: [Track]
     @State private var multiSelection: Set<UUID> = []
     @State private var editMode: EditMode = .active
     
@@ -63,12 +64,16 @@ struct TrackSelectionView: View {
             playlist.addTrack(track)
         }
 
-        try? modelContext.save()
-        dismiss()
+        do {
+            try modelContext.save()
+            dismiss()
+        } catch {
+            modelContext.rollback()
+            showToast(.error(message: "Failed to add tracks: \(error.localizedDescription)"))
+        }
     }
 }
 
 //#Preview {
 //    TrackSelectionView()
 //}
-

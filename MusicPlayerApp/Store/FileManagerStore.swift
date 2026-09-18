@@ -7,119 +7,130 @@
 
 import Foundation
 import Observation
-import AVFAudio
 import AVFoundation
 
+@MainActor
 @Observable
-class FileManagerStore {
-    
-    var showToast: ShowToastAction?
-    
-    @MainActor
-    public func saveImportedFile(_ fileURL: URL) async -> Track? {
-        let fileManager = FileManager.default
-        guard let documentsDirectory = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first else {
-            showToast?(.error(message: "Documents directory not found"))
-            return nil
-        }
-        
-        let fileName = fileURL.lastPathComponent
-        let destinationURL = documentsDirectory.appendingPathComponent(fileName)
-        
-        do {
-            try fileManager.copyItem(at: fileURL, to: destinationURL)
-            
-            if let metadata = await extractMetadata(from: destinationURL) {
-                let track = Track(
-                    id: UUID(),
-                    title: metadata.title ?? fileURL.deletingPathExtension().lastPathComponent,
-                    artist: metadata.artist ?? "Unknown Artist",
-                    album: metadata.album ?? "Unknown Album",
-                    duration: metadata.duration ?? 0.0,
-                    fileName: fileName,
-                    artwork: metadata.artwork
-                )
-                return track
-            } else {
-                showToast?(.error(message: "Failed to extract metadata"))
+final class FileManagerStore {
+    enum FileError: LocalizedError {
+        case documentsDirectoryUnavailable
+        case securityScopedResourceUnavailable
+
+        var errorDescription: String? {
+            switch self {
+            case .documentsDirectoryUnavailable:
+                "The app's Documents directory is unavailable."
+            case .securityScopedResourceUnavailable:
+                "The selected file could not be accessed."
             }
-            
-        } catch {
-            showToast?(.error(message: "Failed to save file to documents directory"))
         }
-        return nil
     }
 
-    public func deleteFile(withName fileName: String) {
-            let fileManager = FileManager.default
-            
-            guard let documentsDirectory = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first else {
-                showToast?(.error(message: "Documents directory not found"))
-                return
-            }
-            
-            let fileURL = documentsDirectory.appendingPathComponent(fileName)
-            
-            guard fileManager.fileExists(atPath: fileURL.path) else {
-                showToast?(.error(message: "File does not exist at path: \(fileURL.path)"))
-                print("File does not exist at path: \(fileURL.path)")
-                return
-            }
-            
-            do {
-                try fileManager.removeItem(at: fileURL)
-                showToast?(.success(message: "Track deleted successfully"))
-            } catch {
-                showToast?(.error(message: "Failed to delete file: \(error)"))
-            }
-        }
-    
-    private func extractMetadata(from url: URL) async -> (title: String?, artist: String?, album: String?, duration: Double?, artwork: Data?)? {
-        
-        var title: String?
-        var artist: String?
-        var album: String?
-        var duration: Double?
-        var artwork: Data?
-        
-        do {
-            let asset = AVAsset(url: url)
-            
-            for format in try await asset.load(.availableMetadataFormats) {
-                let metadata = try await asset.loadMetadata(for: format)
-                
-                let titleItems = AVMetadataItem.metadataItems(from: metadata, filteredByIdentifier: .commonIdentifierTitle)
-                title = try await titleItems.first?.load(.stringValue)
-                
-                let artistItems = AVMetadataItem.metadataItems(from: metadata, filteredByIdentifier: .commonIdentifierArtist)
-                artist = try await artistItems.first?.load(.stringValue)
-                
-                let albumItems = AVMetadataItem.metadataItems(from: metadata, filteredByIdentifier: .commonIdentifierAlbumName)
-                album = try await albumItems.first?.load(.stringValue)
-                
-                let durationItems = AVMetadataItem.metadataItems(from: metadata, filteredByIdentifier: .id3MetadataTime)
-                let durationItem = try await durationItems.first?.load(.numberValue)
-                duration = durationItem?.doubleValue
-                
-                if duration == nil {
-                    duration = getAudioDuration(from: url)
-                }
-                
-                let artworkItems = AVMetadataItem.metadataItems(from: metadata, filteredByIdentifier: .commonIdentifierArtwork)
-                artwork = try await artworkItems.first?.load(.dataValue)
-                
-            }
-        } catch {
-            showToast?(.error(message: error.localizedDescription))
-        }
-        return (title, artist, album, duration, artwork)
+    private struct Metadata: Sendable {
+        let title: String?
+        let artist: String?
+        let album: String?
+        let duration: TimeInterval
+        let artwork: Data?
     }
-    
-    private func getAudioDuration(from url: URL) -> Double {
-        let audioPlayer = try? AVAudioPlayer(contentsOf: url)
-        return audioPlayer?.duration ?? 0.0
+
+    func importTrack(from sourceURL: URL) async throws -> Track {
+        guard sourceURL.startAccessingSecurityScopedResource() else {
+            throw FileError.securityScopedResourceUnavailable
+        }
+        defer { sourceURL.stopAccessingSecurityScopedResource() }
+
+        guard let documentsDirectory = FileManager.default.urls(
+            for: .documentDirectory,
+            in: .userDomainMask
+        ).first else {
+            throw FileError.documentsDirectoryUnavailable
+        }
+
+        let fileExtension = sourceURL.pathExtension
+        let storedFileName = fileExtension.isEmpty
+            ? UUID().uuidString
+            : "\(UUID().uuidString).\(fileExtension)"
+        let destinationURL = documentsDirectory.appending(path: storedFileName)
+
+        do {
+            try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+            let metadata = try await Self.extractMetadata(from: destinationURL)
+
+            return Track(
+                id: UUID(),
+                title: metadata.title ?? sourceURL.deletingPathExtension().lastPathComponent,
+                artist: metadata.artist ?? "Unknown Artist",
+                album: metadata.album ?? "Unknown Album",
+                duration: metadata.duration,
+                fileName: storedFileName,
+                artwork: metadata.artwork
+            )
+        } catch {
+            try? FileManager.default.removeItem(at: destinationURL)
+            throw error
+        }
+    }
+
+    func deleteFile(withName fileName: String) throws {
+        guard let documentsDirectory = FileManager.default.urls(
+            for: .documentDirectory,
+            in: .userDomainMask
+        ).first else {
+            throw FileError.documentsDirectoryUnavailable
+        }
+
+        let fileURL = documentsDirectory.appending(path: fileName)
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return }
+        try FileManager.default.removeItem(at: fileURL)
+    }
+
+    func embeddedArtwork(forFileNamed fileName: String) async throws -> Data? {
+        guard let documentsDirectory = FileManager.default.urls(
+            for: .documentDirectory,
+            in: .userDomainMask
+        ).first else {
+            throw FileError.documentsDirectoryUnavailable
+        }
+
+        let fileURL = documentsDirectory.appending(path: fileName)
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
+        return try await Self.extractMetadata(from: fileURL).artwork
+    }
+
+    private nonisolated static func extractMetadata(from url: URL) async throws -> Metadata {
+        let asset = AVAsset(url: url)
+        let metadata = try await asset.load(.commonMetadata)
+        let durationValue = try await asset.load(.duration).seconds
+
+        let titleItem = AVMetadataItem.metadataItems(
+            from: metadata,
+            filteredByIdentifier: .commonIdentifierTitle
+        ).first
+        let artistItem = AVMetadataItem.metadataItems(
+            from: metadata,
+            filteredByIdentifier: .commonIdentifierArtist
+        ).first
+        let albumItem = AVMetadataItem.metadataItems(
+            from: metadata,
+            filteredByIdentifier: .commonIdentifierAlbumName
+        ).first
+        let artworkItem = AVMetadataItem.metadataItems(
+            from: metadata,
+            filteredByIdentifier: .commonIdentifierArtwork
+        ).first
+
+        let title = try await titleItem?.load(.stringValue)
+        let artist = try await artistItem?.load(.stringValue)
+        let album = try await albumItem?.load(.stringValue)
+        let artwork = try await artworkItem?.load(.dataValue)
+
+        return Metadata(
+            title: title,
+            artist: artist,
+            album: album,
+            duration: durationValue.isFinite ? durationValue : 0,
+            artwork: artwork
+        )
     }
 }
-
-
-

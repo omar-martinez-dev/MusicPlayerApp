@@ -11,10 +11,10 @@ import SwiftData
 struct PlaylistScreen: View {
     
     @Environment(\.modelContext) private var modelContext
-    @Environment(\.audioPlayerStore) private var audioPlayerStore
+    @Environment(AudioPlayerStore.self) private var audioPlayerStore
     @Environment(\.showToast) private var showToast
     
-    @Query private var playlists: [Playlist]
+    @Query(sort: \Playlist.title) private var playlists: [Playlist]
     @Query private var favorites: [Favorites]
     @State private var searchText: String = ""
     @State private var playlistTitleTextField: String = ""
@@ -25,7 +25,7 @@ struct PlaylistScreen: View {
             return playlists
         } else {
             return playlists.filter {
-                $0.title.localizedCaseInsensitiveContains(searchText)
+                $0.title.localizedStandardContains(searchText)
             }
         }
     }
@@ -35,8 +35,16 @@ struct PlaylistScreen: View {
             VStack {
                 List {
                     Section(header: Text("Favorites")) {
-                        NavigationLink(destination: PlaylistTrackListScreen(playlist: favorites.first!, playbackSource: .favorites)) {
-                            PlaylistListCell(playlist: favorites.first!)
+                        if let favorites = favorites.first {
+                            NavigationLink(destination: PlaylistTrackListScreen(playlist: favorites, playbackSource: .favorites)) {
+                                PlaylistListCell(playlist: favorites)
+                            }
+                        } else {
+                            ContentUnavailableView(
+                                "Favorites Unavailable",
+                                systemImage: "heart.slash",
+                                description: Text("The Favorites collection could not be loaded.")
+                            )
                         }
                     }
                     
@@ -61,7 +69,6 @@ struct PlaylistScreen: View {
                                
                                Button("Cancel", role: .cancel) {
                                    playlistTitleTextField = ""
-                                   print("Playlist creation cancelled")
                                }
                            } message: {
                                Text("Please enter a name for your new playlist.")
@@ -69,7 +76,7 @@ struct PlaylistScreen: View {
                 .modifier(ListStyle())
                 .searchable(text: $searchText, prompt: "Search")
                 .overlay {
-                    if (playlists.isEmpty) {
+                    if playlists.isEmpty && favorites.isEmpty {
                         ContentUnavailableView("No Playlists", systemImage: "music.note.list", description: Text("Add some playlists to get started."))
                     }
                 }
@@ -83,6 +90,7 @@ struct PlaylistScreen: View {
                     } label: {
                         Image(systemName: audioPlayerStore.playbackMode.systemImageName)
                     }
+                    .accessibilityLabel("Change Playback Mode")
                 }
                 
                 ToolbarItem(placement: .topBarTrailing) {
@@ -91,30 +99,53 @@ struct PlaylistScreen: View {
                     } label: {
                         Image(systemName: "plus")
                     }
+                    .accessibilityLabel("Create Playlist")
                 }
             }
         }
     }
     
     func createPlaylist(playlistName: String) {
-        guard !playlistName.isEmpty else { return }
-        guard !playlists.contains(where: { $0.title == playlistName }) else { return }
+        let trimmedName = playlistName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else { return }
+        guard !playlists.contains(where: { $0.title.localizedCaseInsensitiveCompare(trimmedName) == .orderedSame }) else {
+            showToast(.error(message: "Playlist names must be unique"))
+            return
+        }
         
-        let newPlaylist = Playlist(id: UUID(), title: playlistName)
+        let newPlaylist = Playlist(id: UUID(), title: trimmedName)
         modelContext.insert(newPlaylist)
-        try? modelContext.save()
+        do {
+            try modelContext.save()
+            playlistTitleTextField = ""
+        } catch {
+            modelContext.rollback()
+            showToast(.error(message: "Failed to create playlist: \(error.localizedDescription)"))
+        }
     }
     
     func deletePlaylist(at offsets: IndexSet) {
-            offsets.forEach { index in
-                let playlist = playlists[index]
-                modelContext.delete(playlist)
-            }
-            try? modelContext.save()
+        let playlistsToDelete = offsets.compactMap { index in
+            filteredPlaylist.indices.contains(index) ? filteredPlaylist[index] : nil
         }
+
+        for playlist in playlistsToDelete {
+            audioPlayerStore.prepareForPlaylistDeletion(playlist: playlist)
+            modelContext.delete(playlist)
+        }
+
+        do {
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            showToast(.error(message: "Failed to delete playlist: \(error.localizedDescription)"))
+        }
+    }
 }
 
 #Preview {
     PlaylistScreen()
         .modelContainer(SampleData.shared.modelContainer)
+        .environment(AudioPlayerStore())
+        .withToast()
 }

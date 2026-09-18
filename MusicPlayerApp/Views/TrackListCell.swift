@@ -9,7 +9,7 @@ import SwiftUI
 
 struct TrackListCell: View {
     
-    @Environment(\.audioPlayerStore) var audioPlayerStore
+    @Environment(AudioPlayerStore.self) private var audioPlayerStore
     
     var track: Track
     var optionButtonState: OptionButtonState = .shown
@@ -18,7 +18,7 @@ struct TrackListCell: View {
     
     var body: some View {
         HStack {
-            TrackIcon(image: track.artwork)
+            TrackIcon(image: track.artwork, title: track.title, artist: track.artist)
                 .overlay {
                     if audioPlayerStore.currentTrack == track && playbackSource == audioPlayerStore.playbackSource {
                         ZStack {
@@ -50,6 +50,7 @@ struct TrackListCell: View {
                         .frame(width: 25, height: 25)
                         .padding(.leading, 8)
                 }
+                .accessibilityLabel("More Options for \(track.title)")
             }
         }
         .frame(maxWidth: .infinity, maxHeight: 50)
@@ -62,7 +63,7 @@ struct PlainTrackListCell: View {
     
     var body: some View {
         HStack {
-            TrackIcon(image: track.artwork)
+            TrackIcon(image: track.artwork, title: track.title, artist: track.artist)
             TrackBasicInfoView(track: track)
         }
         .frame(maxWidth: .infinity, maxHeight: 50)
@@ -120,6 +121,8 @@ enum IconSizes {
 
 struct TrackIcon: View {
     var image: Data?
+    var title: String
+    var artist: String
     var size: IconSizes = .small
     
     var body: some View {
@@ -127,7 +130,7 @@ struct TrackIcon: View {
             if let imageData = image {
                 ArtworkIcon(imageData: imageData)
             } else {
-                MusicNoteIcon()
+                GeneratedArtworkView(title: title, artist: artist)
             }
         }
         .frame(width: size.iconSize, height: size.iconSize)
@@ -157,7 +160,7 @@ struct ArtworkIcon: View {
                 .resizable()
                 .scaledToFit()
         } else {
-            MusicNoteIcon()
+            GeneratedArtworkView(title: "Unknown Track", artist: "Unknown Artist")
         }
     }
 }
@@ -203,4 +206,5 @@ struct FlatWaveFormView: View {
             .frame(maxWidth: .infinity, maxHeight: 50)
     }
     .padding()
+    .environment(AudioPlayerStore())
 }

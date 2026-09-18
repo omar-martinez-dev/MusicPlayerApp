@@ -32,7 +32,7 @@ class Favorites: PlaylistType, Identifiable {
         track.unmarkAsFavorite()
     }
     
-    static let sampleData = [
+    @MainActor static let sampleData = [
         Favorites(id: UUID(), title: "Favorites")
     ]
 }

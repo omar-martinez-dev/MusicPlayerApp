@@ -7,21 +7,28 @@
 
 import Foundation
 import SwiftUI
+import SwiftData
 
 struct PlaylistTrackListScreen: View {
     
-    @Environment(\.audioPlayerStore) private var audioPlayerStore
+    @Environment(AudioPlayerStore.self) private var audioPlayerStore
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.showToast) private var showToast
     
     @State private var searchText: String = ""
     @State private var showAddTrackSheet: Bool = false
     var playlist: PlaylistType
     var playbackSource: PlaybackSource
+
+    private var filteredTracks: [Track] {
+        guard !searchText.isEmpty else { return playlist.trackList }
+        return playlist.trackList.filter { $0.title.localizedStandardContains(searchText) }
+    }
     
     var body: some View {
         VStack {
             List {
-                ForEach(playlist.trackList) { track in
+                ForEach(filteredTracks) { track in
                     TrackListCell(track: track, optionButtonState: .hidden, playbackSource: playbackSource)
                 }
                 .onDelete(perform: deleteTrack)
@@ -39,6 +46,7 @@ struct PlaylistTrackListScreen: View {
                 } label: {
                     Image(systemName: audioPlayerStore.playbackMode.systemImageName)
                 }
+                .accessibilityLabel("Change Playback Mode")
             }
             
             ToolbarItem(placement: .topBarTrailing) {
@@ -47,6 +55,7 @@ struct PlaylistTrackListScreen: View {
                 } label: {
                     Image(systemName: "plus")
                 }
+                .accessibilityLabel("Add Tracks")
             }
         }
         .if(audioPlayerStore.currentTrack != nil) { view in
@@ -63,8 +72,20 @@ struct PlaylistTrackListScreen: View {
     }
     
     func deleteTrack(at Offsets: IndexSet) {
-        audioPlayerStore.prepareForTrackDeletion(track: playlist.trackList[Offsets.first!], deletedFrom: playbackSource)
-        playlist.trackList.remove(atOffsets: Offsets)
-        try? modelContext.save()
+        let tracksToRemove = Offsets.compactMap { index in
+            filteredTracks.indices.contains(index) ? filteredTracks[index] : nil
+        }
+
+        for track in tracksToRemove {
+            audioPlayerStore.prepareForTrackDeletion(track: track, deletedFrom: playbackSource)
+            playlist.removeTrack(track)
+        }
+
+        do {
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            showToast(.error(message: "Failed to update playlist: \(error.localizedDescription)"))
+        }
     }
 }

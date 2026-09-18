@@ -10,8 +10,10 @@ import SwiftData
 
 struct MusicPlayer: View {
     
-    @Environment(\.audioPlayerStore) private var audioPlayerStore
+    @Environment(AudioPlayerStore.self) private var audioPlayerStore
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
+    @Environment(\.showToast) private var showToast
     @Query private var favorites: [Favorites]
     
     @State private var isDraggingSlider: Bool = false
@@ -54,17 +56,13 @@ struct MusicPlayer: View {
                                     .frame(width: imageSize.width, height: imageSize.width)
                                     .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
                             } else {
-                                // If no artwork, show a placeholder
-                                Rectangle()
-                                    .fill(Color(UIColor.systemGray3).gradient)
+                                GeneratedArtworkView(
+                                    title: audioPlayerStore.currentTrack?.title ?? "Unknown Track",
+                                    artist: audioPlayerStore.currentTrack?.artist ?? "Unknown Artist"
+                                )
                                     .aspectRatio(contentMode: .fill)
                                     .frame(width: imageSize.width, height: imageSize.width)
                                     .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
-                                    .overlay(alignment: .center) {
-                                        Image(.musicNoteIcon)
-                                            .resizable()
-                                            .scaledToFit()
-                                    }
                             }
                         }
                         .frame(height: size.width)
@@ -102,6 +100,7 @@ struct MusicPlayer: View {
                                                 .padding(12)
                                         }
                                     }
+                                    .accessibilityLabel(trackFavoriteLabel)
                                 }
                                 
                                 Slider(
@@ -130,6 +129,7 @@ struct MusicPlayer: View {
                                 )
                                 .foregroundStyle(.white)
                                 .buttonStyle(.plain)
+                                .accessibilityLabel("Playback Position")
                                 
                                 HStack {
                                     Text(audioPlayerStore.currentTime.formattedTime)
@@ -146,6 +146,7 @@ struct MusicPlayer: View {
                                         Image(systemName: "backward.fill")
                                             .modifier(PlayerIconButtonFont(size: size))
                                     }
+                                    .accessibilityLabel("Previous Track")
                                     
                                     Button {
                                         audioPlayerStore.isPlaying ? audioPlayerStore.stopAudio() : audioPlayerStore.resumeAudio()
@@ -153,6 +154,7 @@ struct MusicPlayer: View {
                                         Image(systemName: audioPlayerStore.isPlaying ? "pause.fill" : "play.fill")
                                             .font(size.height < 300 ? .largeTitle : .system(size: 50))
                                     }
+                                    .accessibilityLabel(audioPlayerStore.isPlaying ? "Pause" : "Play")
                                     
                                     Button {
                                         audioPlayerStore.playNext()
@@ -160,6 +162,7 @@ struct MusicPlayer: View {
                                         Image(systemName: "forward.fill")
                                             .modifier(PlayerIconButtonFont(size: size))
                                     }
+                                    .accessibilityLabel("Next Track")
                                 }
                                 .foregroundStyle(.white)
                                 .frame(maxWidth: .infinity)
@@ -189,18 +192,33 @@ struct MusicPlayer: View {
                     .buttonStyle(.plain)
                 }
             }
-            .onReceive(Timer.publish(every: 0.1, on: .main, in: .common).autoconnect(), perform: { _ in
+            .onReceive(Timer.publish(every: 0.25, on: .main, in: .common).autoconnect(), perform: { _ in
                 audioPlayerStore.updateProgress()
             })
         }
     }
+
+    private var trackFavoriteLabel: String {
+        audioPlayerStore.currentTrack?.favorite == true ? "Remove from Favorites" : "Add to Favorites"
+    }
     
     func addTrackToFavorites(track: Track) {
         favorites.first?.addTrack(track)
+        saveFavorites()
     }
     
     func removeTrackFromFavorites(track: Track) {
         favorites.first?.removeTrack(track)
+        saveFavorites()
+    }
+
+    private func saveFavorites() {
+        do {
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            showToast(.error(message: "Failed to update Favorites: \(error.localizedDescription)"))
+        }
     }
 }
 
@@ -216,4 +234,7 @@ struct PlayerIconButtonFont: ViewModifier {
 
 #Preview {
     MusicPlayer()
+        .modelContainer(SampleData.shared.modelContainer)
+        .environment(AudioPlayerStore())
+        .withToast()
 }

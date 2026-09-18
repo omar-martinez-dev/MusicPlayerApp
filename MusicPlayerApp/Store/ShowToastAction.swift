@@ -37,8 +37,9 @@ enum AppEvent: Equatable {
     }
 }
 
+@MainActor
 struct ShowToastAction {
-    typealias Action = (AppEvent) -> Void
+    typealias Action = @MainActor (AppEvent) -> Void
     let action: Action
     
     func callAsFunction(_ event: AppEvent) {

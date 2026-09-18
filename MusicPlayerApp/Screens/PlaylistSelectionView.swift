@@ -13,8 +13,8 @@ struct PlaylistSelectionView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
     @Environment(\.showToast) private var showToast
-    @Query private var playlists: [Playlist]
-    @Query private var allTracks: [Track]
+    @Query(sort: \Playlist.title) private var playlists: [Playlist]
+    @Query(sort: \Track.title) private var allTracks: [Track]
     
     var trackSelection: Set<UUID>
     
@@ -33,8 +33,9 @@ struct PlaylistSelectionView: View {
                 } else {
                     List(playlists) { playlist in
                         Button {
-                            addTracks(to: playlist)
-                            dismiss()
+                            if addTracks(to: playlist) {
+                                dismiss()
+                            }
                         } label: {
                             PlaylistListCell(playlist: playlist)
                         }
@@ -57,6 +58,7 @@ struct PlaylistSelectionView: View {
                     } label: {
                         Image(systemName: "plus")
                     }
+                    .accessibilityLabel("Create Playlist")
                 }
             }
             .alert("New Playlist", isPresented: $showNewPlaylistAlert) {
@@ -69,16 +71,22 @@ struct PlaylistSelectionView: View {
         }
     }
     
-    func addTracks(to playlist: Playlist) {
+    @discardableResult
+    func addTracks(to playlist: Playlist) -> Bool {
         let selectedTracks = allTracks.filter { trackSelection.contains($0.id) }
         
         for track in selectedTracks {
-            if !playlist.trackList.contains(track) {
-                playlist.trackList.append(track)
-            }
+            playlist.addTrack(track)
         }
-        
-        try? modelContext.save()
+
+        do {
+            try modelContext.save()
+            return true
+        } catch {
+            modelContext.rollback()
+            showToast(.error(message: "Failed to add tracks: \(error.localizedDescription)"))
+            return false
+        }
     }
     
     func createNewPlaylist() {
@@ -93,8 +101,19 @@ struct PlaylistSelectionView: View {
         
         let newPlaylist = Playlist(id: UUID(), title: trimmedTitle)
         modelContext.insert(newPlaylist)
-        try? modelContext.save()
-        newPlaylistTitle = ""
+        let selectedTracks = allTracks.filter { trackSelection.contains($0.id) }
+        for track in selectedTracks {
+            newPlaylist.addTrack(track)
+        }
+
+        do {
+            try modelContext.save()
+            newPlaylistTitle = ""
+            dismiss()
+        } catch {
+            modelContext.rollback()
+            showToast(.error(message: "Failed to create playlist: \(error.localizedDescription)"))
+        }
     }
 }
 

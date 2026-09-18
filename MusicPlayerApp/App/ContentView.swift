@@ -11,16 +11,22 @@ import Foundation
 
 struct ContentView: View {
     
-    @Environment(\.audioPlayerStore) private var audioPlayerStore
-    @Environment(\.fileManagerStore) private var fileManagerStore
+    @Environment(AudioPlayerStore.self) private var audioPlayerStore
+    @Environment(FileManagerStore.self) private var fileManagerStore
+    @Environment(\.modelContext) private var modelContext
     @Environment(\.showToast) private var showToast
     
     @Query private var allTracks: [Track]
     @Query private var favorites: [Favorites]
     @Query private var playlists: [Playlist]
     
-    @State private var databaseObserver = DatabaseObserver()
-    @State private var didStartObserving = false
+    private var favoriteTrackIDs: [UUID] {
+        favorites.flatMap(\.trackList).map(\.id)
+    }
+
+    private var playlistRevision: [UUID] {
+        playlists.flatMap { [$0.id] + $0.trackList.map(\.id) }
+    }
         
     var body: some View {
         TabView {
@@ -36,29 +42,53 @@ struct ContentView: View {
         }
         .toolbarBackground(.visible, for: .tabBar)
         .toolbarColorScheme(.dark, for: .tabBar)
-        .ignoresSafeArea(edges: .bottom)
         .onAppear {
-            if !didStartObserving {
-                didStartObserving = true
-                Task {
-                    await databaseObserver.startObserving(
-                        audioplayerStore: audioPlayerStore,
-                        allTracks: { allTracks },
-                        favorites: { favorites },
-                        playlists: { playlists }
-                    )
-                }
-            }
             audioPlayerStore.showToast = showToast
-            fileManagerStore.showToast = showToast
-            
-            audioPlayerStore.allTracksProvider = { allTracks }
-            audioPlayerStore.favoritesProvider = { favorites }
-            audioPlayerStore.playlistsProvider = { playlists }
-
             if audioPlayerStore.currentTrack == nil {
                 audioPlayerStore.playbackSource = .allTracks
             }
+            refreshPlaybackQueue()
+        }
+        .onChange(of: allTracks.map(\.id)) { refreshPlaybackQueue() }
+        .onChange(of: favoriteTrackIDs) { refreshPlaybackQueue() }
+        .onChange(of: playlistRevision) { refreshPlaybackQueue() }
+        .onChange(of: audioPlayerStore.playbackSource) { refreshPlaybackQueue() }
+        .task {
+            await restoreMissingArtwork()
+        }
+    }
+
+    private func refreshPlaybackQueue() {
+        audioPlayerStore.updateTrackList(
+            allTracks: allTracks,
+            favorites: favorites,
+            playlists: playlists
+        )
+    }
+
+    private func restoreMissingArtwork() async {
+        var restoredArtwork = false
+
+        for track in allTracks where track.artwork == nil {
+            do {
+                try Task.checkCancellation()
+                if let artwork = try await fileManagerStore.embeddedArtwork(forFileNamed: track.fileName) {
+                    track.artwork = artwork
+                    restoredArtwork = true
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                continue
+            }
+        }
+
+        guard restoredArtwork else { return }
+        do {
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            showToast(.error(message: "Some track artwork could not be restored"))
         }
     }
 }
@@ -67,5 +97,7 @@ struct ContentView: View {
     ContentView()
         .preferredColorScheme(.dark)
         .modelContainer(SampleData.shared.modelContainer)
+        .environment(AudioPlayerStore())
+        .environment(FileManagerStore())
         .withToast()
 }

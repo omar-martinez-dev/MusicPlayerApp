@@ -9,7 +9,7 @@ import SwiftUI
 
 struct MiniMusicPlayer: View {
     
-    @Environment(\.audioPlayerStore) private var audioPlayerStore
+    @Environment(AudioPlayerStore.self) private var audioPlayerStore
     @State private var showMusicPlayer: Bool = false
     
     var body: some View {
@@ -18,7 +18,11 @@ struct MiniMusicPlayer: View {
                 showMusicPlayer.toggle()
             } label: {
                 HStack(alignment: .center){
-                    TrackIcon(image: audioPlayerStore.currentTrack?.artwork ?? nil)
+                    TrackIcon(
+                        image: audioPlayerStore.currentTrack?.artwork,
+                        title: audioPlayerStore.currentTrack?.title ?? "No Track Selected",
+                        artist: audioPlayerStore.currentTrack?.artist ?? "Unknown Artist"
+                    )
                         .overlay {
                             ZStack {
                                 if audioPlayerStore.isPlaying {
@@ -40,6 +44,7 @@ struct MiniMusicPlayer: View {
                 }
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Open Now Playing")
             
             Button {
                 audioPlayerStore.isPlaying ? audioPlayerStore.stopAudio() : audioPlayerStore.resumeAudio()
@@ -48,6 +53,7 @@ struct MiniMusicPlayer: View {
                     .font(.title2)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(audioPlayerStore.isPlaying ? "Pause" : "Play")
             
             
             Button {
@@ -57,10 +63,11 @@ struct MiniMusicPlayer: View {
                     .font(.title2)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Next Track")
         }
         .padding(.horizontal, 8)
         .frame(maxWidth: .infinity, maxHeight: 60)
-        .background(Color(UIColor.systemBackground))
+        .background(.background)
         .fullScreenCover(isPresented: $showMusicPlayer) {
             MusicPlayer()
         }
@@ -81,4 +88,5 @@ struct MiniMusicPlayerModifier: ViewModifier {
 
 #Preview {
     MiniMusicPlayer()
+        .environment(AudioPlayerStore())
 }
